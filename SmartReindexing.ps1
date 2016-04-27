@@ -438,12 +438,36 @@ if ($CollectreindexSyntax)
 	$cmdToRun=$reindexStmt.sqlcmdToRun 
 	$LogBackupcmdToRun=$reindexStmt.LogbackupJob 
 	Add-Content -Path $LogName -Value $Indexruntime
-	$cmdToRun = "sqlcmd -S $ComputerNameParam -d master -t $indexTimeoutValue -E -Q `"" + $cmdToRun + "`""
+	$cmdToRun = "sqlcmd -S $ComputerNameParam -d master -t $indexTimeoutValue -E -Q `"" + 'SET QUOTED_IDENTIFIER ON;' +"" +$cmdToRun + "`""
 	$LogName
 	Add-Content -Path $LogName -Value $cmdToRun
 	$GetReindexRetValue=Invoke-Expression $cmdToRun
 	
 	Add-Content -Path $LogName -Value $GetReindexRetValue
+
+
+#Create table to store output
+	if( !$GetReindexRetValue )  {
+		
+		$GetReindexRetValue = 'Success'
+	}
+	$Query = "use msdb;
+		  IF(OBJECT_ID('tbl_indexRebuild_Log','U') is null)
+			BEGIN
+				CREATE TABLE tbl_indexRebuild_Log (
+				logID INT IDENTITY(1,1) primary key clustered,
+				insertDate DATETIME default getdate(),
+				indexRebuildCommand NVARCHAR(2000),
+				returnValue NVARCHAR(max)
+				)
+			END
+			
+				INSERT INTO tbl_indexRebuild_Log(indexRebuildCommand,returnValue)
+				VALUES('$cmdToRun','$GetReindexRetValue')
+			"
+	$Get_DBInsertLog=Invoke-Sqlcmd -ServerInstance $ComputerNameParam -database "master" -Query $Query  -QueryTimeout 30 -Verbose  -ErrorAction Continue
+
+
 
 # Check if its readonly database, if yes disable for read_write ....
 	if ($reindexStmt.flgUpdateability -eq 2)
@@ -451,7 +475,7 @@ if ($CollectreindexSyntax)
 		$ChangeDatabaseUpdateability= "Start Change Database Updateability  to Read_Only" + (Get-Date -format "yyyy-M-d HH:mm:ss")
 		Add-Content -Path $LogName -Value $ChangeDatabaseUpdateability
 		$ChangeDatabaseUpdateabilitycmdToRun = "if db_id('$Reindex_DatabaseName') is not null ALTER DATABASE [$Reindex_DatabaseName] SET  READ_ONLY WITH NO_WAIT"
-		$ChangeDatabaseUpdateabilitycmdToRun = "sqlcmd -S $ComputerNameParam -d master -E -Q `"" + $ChangeDatabaseUpdateabilitycmdToRun + "`""
+		$ChangeDatabaseUpdateabilitycmdToRun = "sqlcmd -S $ComputerNameParam -d master -E -Q `"" +'SET QUOTED_IDENTIFIER ON;' +"" + $ChangeDatabaseUpdateabilitycmdToRun + "`""
 		$ChangeDatabaseUpdateabilitycmdToRun
 		Add-Content -Path $LogName -Value $ChangeDatabaseUpdateabilitycmdToRun
 		$GetChangeDatabaseUpdateabilitycmdToRun=Invoke-Expression $ChangeDatabaseUpdateabilitycmdToRun
@@ -465,7 +489,7 @@ if ($CollectreindexSyntax)
 		$Logbackupruntime= "Start running log backup " + (Get-Date -format "yyyy-M-d HH:mm:ss")
 		Add-Content -Path $LogName -Value $Logbackupruntime
 		#$LogBackupcmdToRun | Out-File $SQLcmdbatfile
-		$LogBackupcmdToRun = "sqlcmd -S $ComputerNameParam -d master -E -Q `"" + $LogBackupcmdToRun + "`""
+		$LogBackupcmdToRun = "sqlcmd -S $ComputerNameParam -d master -E -Q `"" +'SET QUOTED_IDENTIFIER ON;' +"" + $LogBackupcmdToRun + "`""
 		Add-Content -Path $LogName -Value $LogBackupcmdToRun
 		$GetLogBackupRetValue=Invoke-Expression $LogBackupcmdToRun
 		$GetLogBackupRetValue
