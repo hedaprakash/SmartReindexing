@@ -1,7 +1,7 @@
 ﻿param (
-    [string]$lServerName = "vmsfjiraproddb.advent.com",
+    [string]$lServerName = "vSacCARSQL1.prod.dx",
     [string]$SqlUser = "svcvalidatesql",
-    [string]$SqlPassword = "qqqqqq1!",
+    [string]$SqlPassword = "",
     [switch] $IgnoreReadOnlyDatabase
     )
 #+-------------------------------------------------------------------+    
@@ -18,8 +18,9 @@
 #|: |05-02-2014 1.2     Hua Yu  Optional Support for Read Only       |
 #|: |                   databases                                    |
 #|: |07-25-2014 1.3     Prakash Heda  Working for SQL 2014           |
-#|: |09-27-2014 1.4     Prakash Heda  comments for presentation      |
+#|: |09-27-2014 1.4     Prakash Heda  Added Comments for             |
 #|: |04-27-2016 1.5     Prakash Heda  Updated debugging              |
+#|: |05-24-2016 2.0     Prakash Heda  Releasing version 2            |
 #|{>\-------------------------------------------------------------/<}|  
 #| = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = |  
 #+-------------------------------------------------------------------+  
@@ -65,6 +66,68 @@ else
 		write-host "${runtime}: SQL Powershell Module is not installed on this server"
 	}
 } 
+
+
+function ExecuteQueryV2 (
+  [string] $ServerInstance = $(throw "DB Server Name must be specified."),
+  [string] $Database = "master",
+  [string] $Query = $(throw "QueryToExecute must be specified."),
+  [string] $ReadIntentTrue = $null,
+  [int] $QueryTimeout=60000
+  )
+{
+    Try
+    {
+
+        $TestSqlAcces=$false
+        if ($SqlPassword.Length -ne 0)
+        {	    
+            $ReturnResultset=invoke-sqlcmd -ServerInstance $ServerInstance -database $Database -Query $Query -QueryTimeout $QueryTimeout -Username $SqlUser -Password $SqlPassword   -Verbose  -ErrorAction Stop 
+        }
+        else
+        {
+            $ReturnResultset=invoke-sqlcmd -ServerInstance $ServerInstance -database $Database -Query $Query -QueryTimeout $QueryTimeout -Verbose  -ErrorAction Stop 
+        }
+        $TestSqlAcces=$true
+        $sqlresult=$ReturnResultset
+        if ($sqlresult -match "Timeout expired")
+        {$SQLTimeoutExpired=$True}
+
+    }
+        Catch 
+        {
+            Write-Warning $_.exception.message
+            $errorMsg=$_.exception.message
+
+            if ($errorMsg -match "A network-related or instance-specific error occurred while establishing a connection to SQL Server")
+            {$SQLPortissue=$True}
+            
+            if ($errorMsg -match "Access is denied.")
+            {$Authenticationfailed=$True}
+            
+            $TestSqlAcces=$false
+        }
+
+        $QueryTable="testtblStoreQuery";$QueryExecuted = New-Object system.Data.DataTable “$QueryTable”
+        $col1 = New-Object system.Data.DataColumn QueryToExecute,([string])
+        $QueryExecuted.columns.add($col1)
+        $row2 = $QueryExecuted.NewRow();$row2.QueryToExecute = $QueryToExecute ;$QueryExecuted.Rows.Add($row2)
+
+        $functionOutput=[pscustomobject]   @{
+        QueryExecuted=$QueryExecuted
+        TestSqlAcces = $TestSqlAcces; sqlresult = $sqlresult
+        DestinationHost=$DBServer
+        DatabaseName=$DatabaseName
+        ReturnServerName=$ReturnServerName
+        UserName = $UserName; ExecuteSQLError = $errorMsg
+        SQLPortIssue=$SQLPortissue
+        Authenticationfailed=$Authenticationfailed
+        SQLTimeoutExpired=$SQLTimeoutExpired
+        }
+        return $functionOutput
+}
+
+
 
 
 function write-PHLog {
@@ -130,6 +193,9 @@ set-location c:\ -PassThru | out-null
 }
 
 
+
+
+
 #+-------------Common Code eded-----------------------------------+    
 #endregion
 
@@ -145,7 +211,7 @@ $Logtime=Get-Date -format "yyyyMdHHmmss"
 $LogPath=$ScriptLocation + "\pslogs\"
 if(!(test-path $LogPath)){[IO.Directory]::CreateDirectory($LogPath)}
 $ExecutionSummaryLogFile=$LogPath + $lServerName.Replace("-","_")  + "_" + $ScriptNameWithoutExt +  "_ExecutionSummary_" + $Logtime + ".html"
-"Starting "| write-PHLog -Logtype Debug2
+"Starting reindexing process"| write-PHLog -Logtype Debug2
 
 
 $LogName= $LogPath + $lServerName.Replace("-","_") + "_" +$Logtime + ".log"
@@ -161,6 +227,10 @@ $startSumamry | write-PHLog -Logtype Debug2
 #endregion
 
 $ErrorActionPreference = "STOP"
+
+
+
+
 
 #region PrepareReinDexStats
 $reIndexruntime_Collect= "Start collecting index stats " + (Get-Date -format "yyyy-M-d HH:mm:ss")
@@ -235,10 +305,11 @@ select name from sys.databases where name not in ( 'master','Model') and is_read
 try
 {
     "Preparing index fragmentation collection table: $lServerName "| write-PHLog  -echo -Logtype debug2
-    $retPrepareIndexFragmentation=Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $PrepareIndexFragmentation -QueryTimeout 60 -Username $SqlUser -Password $SqlPassword -Verbose  
-    $retPrepareIndexFragmentation |  write-PHLog  -echo -Logtype debug2
+    $retPrepareIndexFragmentation=ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $PrepareIndexFragmentation -QueryTimeout 60 -Verbose  
+    $retPrepareIndexFragmentationResult= $retPrepareIndexFragmentation.sqlresult
+    $retPrepareIndexFragmentationResult |  write-PHLog  -echo -Logtype debug2
     $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($PrepareIndexFragmentation.Replace("'","''"))','Started')"
-    Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+    ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30  -Verbose 
 
 }
 catch
@@ -247,9 +318,13 @@ catch
     "Error while preparing index fragmentation collection table: $lServerName "| write-PHLog  -echo -Logtype Error
     $_.exception.message | write-PHLog  -echo -Logtype Error
     $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($PrepareIndexFragmentation.Replace("'","''"))','$errMessage')"
-    Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+    ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30  -Verbose 
 
 }
+
+
+if ($retPrepareIndexFragmentation.TestSqlAcces -eq $true) 
+{
 
 
 foreach ($dbname in $retPrepareIndexFragmentation.name)
@@ -263,9 +338,10 @@ foreach ($dbname in $retPrepareIndexFragmentation.name)
 
     Try 
     {
-        $retDBIndexFragmentation=Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $CollectDBIndexFragmentation -QueryTimeout 300 -Username $SqlUser -Password $SqlPassword -Verbose  
+        $retDBIndexFragmentation=ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $CollectDBIndexFragmentation -QueryTimeout 300  -Verbose  
+        $retDBIndexFragmentationResult= $retDBIndexFragmentation.sqlresult
         $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($CollectDBIndexFragmentation.Replace("'","''"))','Success')"
-        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+        ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30  -Verbose 
     }
     catch
     {
@@ -274,7 +350,7 @@ foreach ($dbname in $retPrepareIndexFragmentation.name)
         $errMessage=$_.exception.message 
         $errMessage | write-PHLog  -echo -Logtype Error
         $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($CollectDBIndexFragmentation.Replace("'","''"))','$errMessage')"
-        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+        ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30  -Verbose 
     }
 }
 
@@ -517,9 +593,10 @@ FROM   SYS.DM_DB_INDEX_PHYSICAL_STATS (db_id('testdb'),NULL,NULL,NULL,NULL ) a
     {
         "Generating fragmentation syntax"| write-PHLog  -echo -Logtype debug2
         $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('GenerateDBReindexCode','Started')"
-        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
-        $CollectreindexSyntax=Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $GenerateDBReindexCode -QueryTimeout 300  -Username $SqlUser -Password $SqlPassword -Verbose 
-        $CollectreindexSyntax  | foreach { $_.sqlcmdToRun } | write-PHLog  -echo -Logtype debug2
+        ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30  -Verbose 
+        $CollectreindexSyntax=ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $GenerateDBReindexCode -QueryTimeout 300   -Verbose 
+        $CollectreindexSyntaxResult= $CollectreindexSyntax.sqlresult
+        $CollectreindexSyntaxResult  | foreach { $_.sqlcmdToRun } | write-PHLog  -echo -Logtype debug2
     }
     catch
     {
@@ -528,16 +605,16 @@ FROM   SYS.DM_DB_INDEX_PHYSICAL_STATS (db_id('testdb'),NULL,NULL,NULL,NULL ) a
         $errMessage=$_.exception.message 
         $errMessage | write-PHLog  -echo -Logtype Error
         $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('GenerateDBReindexCode','$errMessage')"
-        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+        ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30  -Verbose 
     }
 
 #endregion
 
 
 # lets start reindexing....
-if ($CollectreindexSyntax)
+if ($CollectreindexSyntaxResult)
 {
-  foreach ($reindexStmt in $CollectreindexSyntax) 
+  foreach ($reindexStmt in $CollectreindexSyntaxResult) 
     {
     $Reindex_DatabaseName= $reindexStmt.DatabaseName
 
@@ -550,8 +627,8 @@ if ($CollectreindexSyntax)
 		        $ChangeDatabaseUpdateabilitycmdToRun = "if db_id('$Reindex_DatabaseName') is not null ALTER DATABASE [$Reindex_DatabaseName] SET  READ_WRITE WITH NO_WAIT"
 		        $ChangeDatabaseUpdateabilitycmdToRun  | write-PHLog  -echo -Logtype debug2
                 $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($ChangeDatabaseUpdateabilitycmdToRun.Replace("'","''"))','Started')"
-                Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
-                $GetReindexRetValue=Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ChangeDatabaseUpdateabilitycmdToRun -QueryTimeout 60  -Username $SqlUser -Password $SqlPassword -Verbose 
+                ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30  -Verbose 
+                $GetReindexRetValue=ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $ChangeDatabaseUpdateabilitycmdToRun -QueryTimeout 60   -Verbose 
             }
             catch
             {
@@ -559,7 +636,7 @@ if ($CollectreindexSyntax)
                 $errMessage=$_.exception.message 
                 $errMessage | write-PHLog  -echo -Logtype Error
                 $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($ChangeDatabaseUpdateabilitycmdToRun.Replace("'","''"))','$errMessage')"
-                Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+                ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30  -Verbose 
             }
 
 
@@ -573,9 +650,10 @@ if ($CollectreindexSyntax)
 	            "Start running index " + (Get-Date -format "yyyy-M-d HH:mm:ss")  | write-PHLog  -echo -Logtype debug2
 	            $LogBackupcmdToRun=$reindexStmt.LogbackupJob 
                 $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($reindexStmt.sqlcmdToRun.Replace("'","''"))','Started')"
-                Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
-                $GetReindexRetValue=Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $($reindexStmt.sqlcmdToRun) -QueryTimeout $($reindexStmt.TimeoutValue)  -Username $SqlUser -Password $SqlPassword -Verbose 
-	            $GetReindexRetValue  | write-PHLog  -echo -Logtype debug2
+                ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30  -Verbose 
+                $GetReindexRetValue=ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $($reindexStmt.sqlcmdToRun) -QueryTimeout $($reindexStmt.TimeoutValue)   -Verbose 
+                $GetReindexRetValueResult= $GetReindexRetValue.sqlresult
+	            $GetReindexRetValueResult  | write-PHLog  -echo -Logtype debug2
         }
         catch
         {
@@ -584,7 +662,7 @@ if ($CollectreindexSyntax)
             $errMessage=$_.exception.message 
             $errMessage | write-PHLog  -echo -Logtype Error
             $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($reindexStmt.sqlcmdToRun.Replace("'","''"))','$errMessage')"
-            Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+            ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30  -Verbose 
         }
 
 
@@ -598,8 +676,8 @@ if ($CollectreindexSyntax)
 		        $ChangeDatabaseUpdateabilitycmdToRun = "if db_id('$Reindex_DatabaseName') is not null ALTER DATABASE [$Reindex_DatabaseName] SET  READ_ONLY WITH NO_WAIT"
 		        $ChangeDatabaseUpdateabilitycmdToRun | write-PHLog  -echo -Logtype Debug2
                 $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($ChangeDatabaseUpdateabilitycmdToRun.Replace("'","''"))','Started')"
-                Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
-                $GetReindexRetValue=Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ChangeDatabaseUpdateabilitycmdToRun -QueryTimeout 60  -Username $SqlUser -Password $SqlPassword -Verbose 
+                ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30  -Verbose 
+                $GetReindexRetValue=ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $ChangeDatabaseUpdateabilitycmdToRun -QueryTimeout 60   -Verbose 
 
             }
             catch
@@ -608,7 +686,7 @@ if ($CollectreindexSyntax)
                 $errMessage=$_.exception.message 
                 $errMessage | write-PHLog  -echo -Logtype Error
                 $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($ChangeDatabaseUpdateabilitycmdToRun.Replace("'","''"))','$errMessage')"
-                Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+                ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30  -Verbose 
             }
 		    Start-Sleep -s 2
     	    }
@@ -623,11 +701,11 @@ if ($CollectreindexSyntax)
 		                "Start running log backup job" + (Get-Date -format "yyyy-M-d HH:mm:ss") | write-PHLog  -echo -Logtype Debug2
                         $LogBackupcmdToRun  | write-PHLog  -echo -Logtype Debug2
                         $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($LogBackupcmdToRun.Replace("'","''"))','Started')"
-                        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
-                        $GetReindexRetValue=Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $LogBackupcmdToRun -QueryTimeout 30  -Username $SqlUser -Password $SqlPassword -Verbose -ErrorAction Stop
+                        ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30  -Verbose 
+                        $GetReindexRetValue=ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $LogBackupcmdToRun -QueryTimeout 30   -Verbose -ErrorAction Stop
                         "Waiting for 30 sec"  | write-PHLog  -echo -Logtype Debug2
                         $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('Waiting for 30 sec','Success')"
-                        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+                        ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30  -Verbose 
             		    Start-Sleep -s 30
 
                     }
@@ -637,13 +715,13 @@ if ($CollectreindexSyntax)
                         $errMessage=$_.exception.message 
                         $errMessage | write-PHLog  -echo -Logtype Error
                         $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($LogBackupcmdToRun.Replace("'","''"))','$errMessage')"
-                        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+                        ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30  -Verbose 
                     }
                 }
                 else
                 {
                         $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('Log backup job name could not be found, check backup job naming convention','Error')"
-                        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+                        ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30  -Verbose 
                 }
 	       }
 
@@ -653,11 +731,18 @@ else
 {
     "No tables met reindex criteria"| write-PHLog  -echo -Logtype Success
     $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('No tables met reindex criteria','Success')"
-    Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+    ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30  -Verbose 
 
 }
 
 "Reindex process completed"| write-PHLog  -echo -Logtype Success
 $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('Reindexing Completed','Success')"
-Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+ExecuteQueryV2 -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30  -Verbose 
 
+}
+else
+{
+    "Reindex process failed as db connection failed"| write-PHLog  -echo -Logtype Error
+    $retPrepareIndexFragmentation.ExecuteSQLError| write-PHLog  -echo -Logtype Error
+    Write-Error $retPrepareIndexFragmentation.ExecuteSQLError 
+}
