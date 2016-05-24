@@ -1,7 +1,13 @@
-﻿#+-------------------------------------------------------------------+    
+﻿param (
+    [string]$lServerName = "vmsfjiraproddb.advent.com",
+    [string]$SqlUser = "svcvalidatesql",
+    [string]$SqlPassword = "qqqqqq1!",
+    [switch] $IgnoreReadOnlyDatabase
+    )
+#+-------------------------------------------------------------------+    
 #| = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = |    
 #|{>/-------------------------------------------------------------\<}| 
-#|: | Script Name: SmartReindexing.ps1                              		 | 
+#|: | Script Name: SmartReindexing.ps1                               | 
 #|: | Author:  Prakash Heda                                          | 
 #|: | Email:   Pheda@advent.com	 Blog:www.sqlfeatures.com   		 |
 #|: | Purpose: Automated Reindex Jobs	                             |
@@ -13,6 +19,7 @@
 #|: |                   databases                                    |
 #|: |07-25-2014 1.3     Prakash Heda  Working for SQL 2014           |
 #|: |09-27-2014 1.4     Prakash Heda  comments for presentation      |
+#|: |04-27-2016 1.5     Prakash Heda  Updated debugging              |
 #|{>\-------------------------------------------------------------/<}|  
 #| = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = |  
 #+-------------------------------------------------------------------+  
@@ -23,14 +30,16 @@
 CLS
 
 $ScriptLocation=split-path -parent $MyInvocation.MyCommand.Path
+$ScriptNameWithoutExt=[system.io.path]::GetFilenameWithoutExtension($MyInvocation.MyCommand.Path)
 
-$ComputerNameParam  = gc env:computername
+if ($lServerName.length -eq 0) {$lServerName  = gc env:computername}
 $result= Test-Path C:\WINDOWS\Cluster\CLUSDB
 switch ($result)
-    {TRUE{$split = $ComputerNameParam.split("-");$ComputerNameParam = $split[0]}}
+    {TRUE{$split = $lServerName.split("-");$lServerName = $split[0]}}
 
-#$ComputerNameParam = "vSacAxDb28-1"
+#$lServerName = "vSacAxDb28-1"
 
+# LoadSQLModule
 if ( Get-PSSnapin -Registered | where {$_.name -eq 'SqlServerProviderSnapin100'} ) 
 { 
     if( !(Get-PSSnapin | where {$_.name -eq 'SqlServerProviderSnapin100'})) 
@@ -58,7 +67,73 @@ else
 } 
 
 
+function write-PHLog {
+    param([string] $Logtype,
+          [string] $fileName,
+          [switch] $echo,
+          [switch] $clear
+    )
+    switch ($Logtype) 
+        { 
+            "DEBUG" {$LogtypeEntry="White";$cmdPrint="White"} 
+            "DEBUG2" {$LogtypeEntry="White";$cmdPrint="White"} 
+            "WARNING" {$LogtypeEntry="Magenta";$cmdPrint="Magenta"} 
+            "ERROR" {$LogtypeEntry="Red";$cmdPrint="Red"} 
+            "Success" {$LogtypeEntry="LightGreen";$cmdPrint="Green"} 
+            default {$LogtypeEntry="DarkRed";$cmdPrint="RED"}
+        }
 
+
+$CurrentPath=$pwd
+set-location c:\ -PassThru | out-null
+
+    Try {            
+            $LogToWriteRec=@()
+            $flgObject=$false
+            $input | %{
+                    $LogToWriteRec+=$_; 
+                    if ($_.length -gt 0) {if ($_.GetType().name -ne "String") {$flgObject=$true}} else {$flgObject=$true}
+                }
+            $LogToWrite =$LogToWriteRec | Out-String
+            if (($Logtype -eq "Debug2")-and ($flgObject -ne $true) -and ($LogToWrite.Length -lt 120))
+            {
+                $LogToWrite="          "+$LogToWrite
+            }
+            $LogToWrite=$LogToWrite.TrimEnd()
+
+            if ($functionname) {$LogToWrite= "        "+$functionname +":"+ $LogToWrite}
+            if ($echo.IsPresent)
+            {
+                Write-host $LogToWrite -ForegroundColor $cmdPrint
+            }
+
+            if (($flgObject -eq $true) -or ($LogToWrite.Length -gt 129)) 
+            {
+                $LogToWrite="<blockquote>" + $LogToWrite + "</blockquote>"
+            }
+
+            $LogToWrite=($LogToWrite).Replace("`n","<br>")
+            $LogToWrite=($LogToWrite).Replace("  ","&nbsp;&nbsp;")
+            [boolean] $isAppend = !$clear.IsPresent
+            if (($isAppend -eq $false ) -or (!(test-path $ExecutionSummaryLogFile)) )
+            {$BodyColor="<body bgcolor=""DarkBlue"">"} else {$BodyColor=""}
+
+            $BodyColor + "<font color=""$LogtypeEntry"">" + $LogToWrite  + "</font> <br>"  | out-file $ExecutionSummaryLogFile -encoding UTF8 -Append:$isAppend | Out-Null
+            Start-Sleep -Milliseconds 10
+            #<blockquote>Whatever you need to indent</blockquote>
+        }
+        catch
+        {
+            write-warning ("Write-PHLog function failed, very unsual pleae check with script writer`n`n $($_.exception.message) `n`n"  )
+        }
+    set-location $CurrentPath | out-null
+}
+
+
+#+-------------Common Code eded-----------------------------------+    
+#endregion
+
+#region ConfigureVariables
 
 set-location "C:\" -PassThru | Out-Null 
 set-location $ScriptLocation -PassThru | Out-Null 
@@ -69,58 +144,50 @@ $runtime=Get-Date -format "yyyy-M-d HH:mm:ss"
 $Logtime=Get-Date -format "yyyyMdHHmmss"
 $LogPath=$ScriptLocation + "\pslogs\"
 if(!(test-path $LogPath)){[IO.Directory]::CreateDirectory($LogPath)}
+$ExecutionSummaryLogFile=$LogPath + $lServerName.Replace("-","_")  + "_" + $ScriptNameWithoutExt +  "_ExecutionSummary_" + $Logtime + ".html"
+"Starting "| write-PHLog -Logtype Debug2
 
 
-#+-------------Common Code eded-----------------------------------+    
-#endregion
-
-#region ConfigureVariables
-
-$LogName= $LogPath + $ComputerNameParam.Replace("-","_") + "_" +$Logtime + ".log"
+$LogName= $LogPath + $lServerName.Replace("-","_") + "_" +$Logtime + ".log"
 $SQLGenerateDBReindex= $ScriptLocation+"\GenerateDBReindex.sql"
 $SQLGenerateDBReindex
-$SQLGenerateDBReindexOutput= $LogPath + $ComputerNameParam.Replace("-","_") +  "_" +"GenerateDBReindex" + "_" +$Logtime + ".txt"
+$SQLGenerateDBReindexOutput= $LogPath + $lServerName.Replace("-","_") +  "_" +"GenerateDBReindex" + "_" +$Logtime + ".txt"
 $SQLcmdbatfile= $ScriptLocation+ "\pslogs\" +"executeReindex" + "_" +$Logtime + ".bat"
 
-$startSumamry="`r`nLogName: $LogName`r`nScriptLocation: $ScriptLocation`r`n"
+$startSumamry="`r`nLogName: $ExecutionSummaryLogFile`r`nScriptLocation: $ScriptLocation`r`n"
 
-Write-Host $startSumamry
-
-Add-Content -Path $LogName -Value $startSumamry
+$startSumamry | write-PHLog -Logtype Debug2
 
 #endregion
 
-#region GenerateDBReindexCode
-# Code to generate reindex syntax
+$ErrorActionPreference = "STOP"
 
-$GenerateDBReindexCode= @"
+#region PrepareReinDexStats
+$reIndexruntime_Collect= "Start collecting index stats " + (Get-Date -format "yyyy-M-d HH:mm:ss")
+$reIndexruntime_Collect | write-PHLog -Logtype Debug2
+
+if ($IgnoreReadOnlyDatabase.IsPresent){$IgnoreReadOnlyDatabaseflg=1} else {$IgnoreReadOnlyDatabaseflg=0}
+
+$IgnoreReadOnlyDatabaseflg=1
+
+$PrepareIndexFragmentation= @"
 
 
-/*
-#+-------------------------------------------------------------------+    
-#| = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = |    
-#|{>/-------------------------------------------------------------\<}| 
-#|: | Script Name: GenerateReindexCode.sql                           | 
-#|: | Author:  Prakash Heda                                          | 
-#|: | Email:   Pheda@advent.com	 Blog:www.sqlfeatures.com   		 |
-#|: | Purpose: Automatically generrate reindex code	                 |
-#|: | 							 	 								 |
-#|: |Date       Version ModifiedBy    Change 						 |
-#|: |05-16-2012 1.0     Prakash Heda  Initial version                |
-#|: |07-25-2013 1.1     Prakash Heda  Working for SQL 2012           |
-#|: |05-02-2014 1.2     Hua Yu  Optional Support for Read Only       |
-#|: |                   databases                                    |
-#|: |07-25-2014 1.3     Prakash Heda  Working for SQL 2014           |
-#|{>\-------------------------------------------------------------/<}|  
-#| = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = |  
-#+-------------------------------------------------------------------+  
-*/
+IF (OBJECT_ID('msdb..tbl_indexRebuild_Log','U') is null)
+BEGIN
+	CREATE TABLE msdb..tbl_indexRebuild_Log (
+	logID INT IDENTITY(1,1) primary key clustered,
+	insertDate DATETIME default getdate(),
+	indexRebuildCommand NVARCHAR(2000),
+	returnValue NVARCHAR(max)
+	)
+END
 
-set nocount on
+delete from msdb..tbl_indexRebuild_Log where insertDate < dateadd(Month,-1,getdate())
+GO
+INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('Reindexing Started','Success')
 GO
 
-USE [tempdb]
-GO
 -- Create base table to store fragmented data 
 if object_id('tempdb..fragmentedTables') is not null drop table tempdb..fragmentedTables
 GO
@@ -155,18 +222,76 @@ into tempdb..CollectFragmentationDetails908
 FROM   SYS.DM_DB_INDEX_PHYSICAL_STATS (db_id('master'),NULL,NULL,NULL,NULL ) a
 where 1=2
 
-insert into  tempdb..CollectFragmentationDetails908
-select *
-FROM   SYS.DM_DB_INDEX_PHYSICAL_STATS (NULL,NULL,NULL,NULL,NULL ) a
+if (0=$IgnoreReadOnlyDatabaseflg)
+select name from sys.databases where name not in ( 'master','Model') 
+else
+select name from sys.databases where name not in ( 'master','Model') and is_read_only = 0
 
-/*
-select *
-FROM   SYS.DM_DB_INDEX_PHYSICAL_STATS (db_id('testdb'),NULL,NULL,NULL,NULL ) a
 
-*/
+"@
+
+
+
+try
+{
+    "Preparing index fragmentation collection table: $lServerName "| write-PHLog  -echo -Logtype debug2
+    $retPrepareIndexFragmentation=Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $PrepareIndexFragmentation -QueryTimeout 60 -Username $SqlUser -Password $SqlPassword -Verbose  
+    $retPrepareIndexFragmentation |  write-PHLog  -echo -Logtype debug2
+    $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($PrepareIndexFragmentation.Replace("'","''"))','Started')"
+    Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+
+}
+catch
+{
+
+    "Error while preparing index fragmentation collection table: $lServerName "| write-PHLog  -echo -Logtype Error
+    $_.exception.message | write-PHLog  -echo -Logtype Error
+    $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($PrepareIndexFragmentation.Replace("'","''"))','$errMessage')"
+    Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+
+}
+
+
+foreach ($dbname in $retPrepareIndexFragmentation.name)
+{
+
+    "Collecting fragmentation information from $dbname "| write-PHLog  -echo -Logtype debug2
+    $CollectDBIndexFragmentation= @"
+        Insert into  tempdb..CollectFragmentationDetails908  select * FROM   SYS.DM_DB_INDEX_PHYSICAL_STATS (db_id('$dbname'),NULL,NULL,NULL,NULL ) a 
+"@
+    $CollectDBIndexFragmentation
+
+    Try 
+    {
+        $retDBIndexFragmentation=Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $CollectDBIndexFragmentation -QueryTimeout 300 -Username $SqlUser -Password $SqlPassword -Verbose  
+        $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($CollectDBIndexFragmentation.Replace("'","''"))','Success')"
+        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+    }
+    catch
+    {
+
+        "Error while collecting index fragmentation collection table: $lServerName..$dbname "| write-PHLog  -echo -Logtype Error
+        $errMessage=$_.exception.message 
+        $errMessage | write-PHLog  -echo -Logtype Error
+        $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($CollectDBIndexFragmentation.Replace("'","''"))','$errMessage')"
+        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+    }
+}
+
+#endregion
+
+#region GenerateDBReindexCode
+# Code to generate reindex syntax
+
+$GenerateDBReindexCode= @"
+set nocount on
+GO
 
 -- Collect online vs offline tables
--- truncate table tempdb..fragmentedTables
+truncate table tempdb..fragmentedTables
+
+GO
+
 if object_id('tempdb..##tmpFragmentationDetails908_2') is not null drop table ##tmpFragmentationDetails908_2
 go
 select *,1 as flg_Online, OBJECT_SCHEMA_NAME([object_id], [database_id]) as schemaName
@@ -192,7 +317,7 @@ declare @offlineIndexes table
 DECLARE @command VARCHAR(5000)  
 
 SELECT @command = 'Use [' + '?' + '] SELECT  distinct
-object_id,db_id(''?'') from ?.sys.columns c 
+object_id,db_id(''?'') from [?].sys.columns c 
 where (c.system_type_id IN (34,35,99,241) or c.max_length =-1)
 '  
 
@@ -289,7 +414,7 @@ from tempdb..fragmentedTables a
 where rowidnum in (
 select  max(rowidnum)  as LogBackupID 
 from tempdb..fragmentedTables a
-group by SubtotalPages/4000)
+group by SubtotalPages/50000)
 
 
 
@@ -339,40 +464,30 @@ declare @SQLToExecute table
 insert into @SQLToExecute (Rowidnum,SQLToExecute,TimeoutValue,flgBackupLog,flgUpdateability,DatabaseName)
 select Rowidnum,
 	case 
-	when avg_fragmentation_in_percent between 20 and 30  and page_count >2000
-	then 
-		'alter index ['+ a.INDEX_Name +'] on '+ db_name(a.database_id) +'.' + a.SchemaName + '.' + object_name(a.object_id,a.database_id) +' reorganize ;' + '--Current fragmentation level: ' + convert(VARCHAR(200),AVG_FRAGMENTATION_IN_PERCENT) + ' Page Count: ' + convert(VARCHAR(200),page_count)
-	when avg_fragmentation_in_percent > 30 or page_count <2000
-	then 
-		'alter index ['+ a.INDEX_Name +'] on '+ db_name(a.database_id) +'.' + a.SchemaName + '.' + object_name(a.object_id,a.database_id) +' REBUILD WITH (FILLFACTOR = '+ convert(varchar(200),a.EXPECTED_FILL_FACTOR)+', SORT_IN_TEMPDB = ON,STATISTICS_NORECOMPUTE = ON, ONLINE = '+@ReindexOnline+');'  + '--Current fragmentation level: ' + convert(VARCHAR(200),AVG_FRAGMENTATION_IN_PERCENT) + ' Page Count: ' + convert(VARCHAR(200),page_count)
-	else
-	''
-	end
-	,TimeoutValue,flgBackupLog,flgUpdateability, DatabaseName
-from tempdb..fragmentedTables a
-where  flg_Online = 1
-order by a.database_id,TableName, INDEX_TYPE_DESC desc
-
-insert into @SQLToExecute (Rowidnum,SQLToExecute,TimeoutValue,flgBackupLog,flgUpdateability,DatabaseName)
-select Rowidnum,
-	case 
-	when avg_fragmentation_in_percent between 20 and 30
-	then 
-		'alter index ['+ a.INDEX_Name +'] on '+ db_name(a.database_id) +'.' + a.SchemaName + '.' + object_name(a.object_id,a.database_id) +' reorganize ;'  + '--Current fragmentation level: ' + convert(VARCHAR(200),AVG_FRAGMENTATION_IN_PERCENT) + ' Page Count: ' + convert(VARCHAR(200),page_count)
-	when avg_fragmentation_in_percent > 30
+	when flg_Online = 0 and ((avg_fragmentation_in_percent > 30) or (avg_fragmentation_in_percent between 20 and 30 and page_count <=2000))
 	then 
 		'alter index ['+ a.INDEX_Name +'] on '+ db_name(a.database_id) +'.' + a.SchemaName + '.' + object_name(a.object_id,a.database_id) +' REBUILD WITH (FILLFACTOR = '+ convert(varchar(200),a.EXPECTED_FILL_FACTOR)+', SORT_IN_TEMPDB = ON,STATISTICS_NORECOMPUTE = ON, ONLINE = OFF);' + '--Current fragmentation level: ' + convert(VARCHAR(200),AVG_FRAGMENTATION_IN_PERCENT) + ' Page Count: ' + convert(VARCHAR(200),page_count)
+
+	when flg_Online = 0 and (avg_fragmentation_in_percent between 20 and 30 and page_count >2000)
+	then 
+		'alter index ['+ a.INDEX_Name +'] on '+ db_name(a.database_id) +'.' + a.SchemaName + '.' + object_name(a.object_id,a.database_id) +' reorganize ;'  + '--Current fragmentation level: ' + convert(VARCHAR(200),AVG_FRAGMENTATION_IN_PERCENT) + ' Page Count: ' + convert(VARCHAR(200),page_count)
+	when flg_Online = 1 and ((avg_fragmentation_in_percent > 30) or (avg_fragmentation_in_percent between 20 and 30 and page_count <=2000))
+	then 
+		'alter index ['+ a.INDEX_Name +'] on '+ db_name(a.database_id) +'.' + a.SchemaName + '.' + object_name(a.object_id,a.database_id) +' REBUILD WITH (FILLFACTOR = '+ convert(varchar(200),a.EXPECTED_FILL_FACTOR)+', SORT_IN_TEMPDB = ON,STATISTICS_NORECOMPUTE = ON, ONLINE = '+@ReindexOnline+');'  + '--Current fragmentation level: ' + convert(VARCHAR(200),AVG_FRAGMENTATION_IN_PERCENT) + ' Page Count: ' + convert(VARCHAR(200),page_count)
+	when flg_Online = 1 and (avg_fragmentation_in_percent between 20 and 30 and page_count >2000)
+	then 
+		'alter index ['+ a.INDEX_Name +'] on '+ db_name(a.database_id) +'.' + a.SchemaName + '.' + object_name(a.object_id,a.database_id) +' reorganize ;' + '--Current fragmentation level: ' + convert(VARCHAR(200),AVG_FRAGMENTATION_IN_PERCENT) + ' Page Count: ' + convert(VARCHAR(200),page_count)
 	else
-	''
+		'alter index ['+ a.INDEX_Name +'] on '+ db_name(a.database_id) +'.' + a.SchemaName + '.' + object_name(a.object_id,a.database_id) +' REBUILD WITH (FILLFACTOR = '+ convert(varchar(200),a.EXPECTED_FILL_FACTOR)+', SORT_IN_TEMPDB = ON,STATISTICS_NORECOMPUTE = ON, ONLINE = OFF);' + '--Current fragmentation level: ' + convert(VARCHAR(200),AVG_FRAGMENTATION_IN_PERCENT) + ' Page Count: ' + convert(VARCHAR(200),page_count)
 	end
 	,TimeoutValue,flgBackupLog,flgUpdateability, DatabaseName
 from tempdb..fragmentedTables a
-where  flg_Online = 0
-order by a.database_id 
+order by a.database_id,TableName, INDEX_TYPE_DESC desc
+
 
 declare @backupLogJob varchar(200)
-if exists (select name from msdb..sysjobs where name in ('DBA:Backup All Tlogs','DBA_BackupDB.LogBackup') and enabled=1)
-select @backupLogJob=name from msdb..sysjobs where name in ('DBA:Backup All Tlogs','DBA_BackupDB.LogBackup') and enabled=1
+if exists (select name from msdb..sysjobs where name in ('DBA:Backup All Tlogs','DBA_BackupDB.LogBackup','DBA_BackupDB.Logsbackup') and enabled=1)
+select @backupLogJob=name from msdb..sysjobs where name in ('DBA:Backup All Tlogs','DBA_BackupDB.LogBackup','DBA_BackupDB.Logsbackup') and enabled=1
 select @backupLogJob= 'exec msdb..sp_start_job @job_name =''' + @backupLogJob + ''''
 
 --select @backupLogJob = 'sqlcmd -S '+ @@SERVERNAME + ' -d master -E -Q `"' + @backupLogJob + '`"'  
@@ -391,23 +506,33 @@ FROM   SYS.DM_DB_INDEX_PHYSICAL_STATS (db_id('testdb'),NULL,NULL,NULL,NULL ) a
 
 "@
 
-#endregion
-
-$ErrorActionPreference = "silentlycontinue"
-
-#region CollectReinDexStats
-$reIndexruntime_Collect= "Start collecting index stats " + (Get-Date -format "yyyy-M-d HH:mm:ss")
-Add-Content -Path $LogName -Value $reIndexruntime_Collect
-
-
-$CollectreindexSyntax=Invoke-Sqlcmd -ServerInstance $ComputerNameParam -database "master" -Query $GenerateDBReindexCode -QueryTimeout 60000  -Verbose  -ErrorAction Continue 
-
-#$CollectreindexSyntax=Invoke-Sqlcmd -ServerInstance $ComputerNameParam -database "master" -InputFile $SQLGenerateDBReindex  -QueryTimeout 600000  -Verbose  -ErrorAction Continue 
-$CollectreindexSyntax
-$CollectreindexSyntax  | foreach { $_.sqlcmdToRun } | Out-File  $SQLGenerateDBReindexOutput 
-#.$SQLGenerateDBReindexOutput
+# $GenerateDBReindexCode | clip
 
 #endregion
+
+
+#region CollectreindexSyntax
+
+    try
+    {
+        "Generating fragmentation syntax"| write-PHLog  -echo -Logtype debug2
+        $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('GenerateDBReindexCode','Started')"
+        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+        $CollectreindexSyntax=Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $GenerateDBReindexCode -QueryTimeout 300  -Username $SqlUser -Password $SqlPassword -Verbose 
+        $CollectreindexSyntax  | foreach { $_.sqlcmdToRun } | write-PHLog  -echo -Logtype debug2
+    }
+    catch
+    {
+
+        "Error while gathering fragmentation syntax: $lServerName "| write-PHLog  -echo -Logtype Error
+        $errMessage=$_.exception.message 
+        $errMessage | write-PHLog  -echo -Logtype Error
+        $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('GenerateDBReindexCode','$errMessage')"
+        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+    }
+
+#endregion
+
 
 # lets start reindexing....
 if ($CollectreindexSyntax)
@@ -417,87 +542,122 @@ if ($CollectreindexSyntax)
     $Reindex_DatabaseName= $reindexStmt.DatabaseName
 
 # Check if its readonly database, if yes enable for write....
-	if ($reindexStmt.flgUpdateability -eq 1)
-	   {
-		$ChangeDatabaseUpdateability= "Start Change Database Updateability to Read_Write " + (Get-Date -format "yyyy-M-d HH:mm:ss")
-		Add-Content -Path $LogName -Value $ChangeDatabaseUpdateability
-		$ChangeDatabaseUpdateabilitycmdToRun = "if db_id('$Reindex_DatabaseName') is not null ALTER DATABASE [$Reindex_DatabaseName] SET  READ_WRITE WITH NO_WAIT"
-		$ChangeDatabaseUpdateabilitycmdToRun = "sqlcmd -S $ComputerNameParam -d master -E -Q `"" + $ChangeDatabaseUpdateabilitycmdToRun + "`""
-		$ChangeDatabaseUpdateabilitycmdToRun
-		Add-Content -Path $LogName -Value $ChangeDatabaseUpdateabilitycmdToRun
-		$GetChangeDatabaseUpdateabilitycmdToRun=Invoke-Expression $ChangeDatabaseUpdateabilitycmdToRun
-		$GetChangeDatabaseUpdateabilitycmdToRun
-		Add-Content -Path $LogName -Value $GetChangeDatabaseUpdateabilitycmdToRun
-		Start-Sleep -s 2
-	   }
-	
+	    if ($reindexStmt.flgUpdateability -eq 1)
+	       {
+            Try
+            {
+		        "Start Change Database Updateability to Read_Write " + (Get-Date -format "yyyy-M-d HH:mm:ss")  | write-PHLog  -echo -Logtype debug2
+		        $ChangeDatabaseUpdateabilitycmdToRun = "if db_id('$Reindex_DatabaseName') is not null ALTER DATABASE [$Reindex_DatabaseName] SET  READ_WRITE WITH NO_WAIT"
+		        $ChangeDatabaseUpdateabilitycmdToRun  | write-PHLog  -echo -Logtype debug2
+                $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($ChangeDatabaseUpdateabilitycmdToRun.Replace("'","''"))','Started')"
+                Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+                $GetReindexRetValue=Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ChangeDatabaseUpdateabilitycmdToRun -QueryTimeout 60  -Username $SqlUser -Password $SqlPassword -Verbose 
+            }
+            catch
+            {
+                "Error while Change Database Updateability to Read_Write "| write-PHLog  -echo -Logtype Error
+                $errMessage=$_.exception.message 
+                $errMessage | write-PHLog  -echo -Logtype Error
+                $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($ChangeDatabaseUpdateabilitycmdToRun.Replace("'","''"))','$errMessage')"
+                Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+            }
+
+
+
+	       }
 # Run the re-index command
-	$reindexStmt
-	$indexTimeoutValue = $reindexStmt.TimeoutValue
-	$Indexruntime= "Start running index " + (Get-Date -format "yyyy-M-d HH:mm:ss")
-	$cmdToRun=$reindexStmt.sqlcmdToRun 
-	$LogBackupcmdToRun=$reindexStmt.LogbackupJob 
-	Add-Content -Path $LogName -Value $Indexruntime
-	$cmdToRun = "sqlcmd -S $ComputerNameParam -d master -t $indexTimeoutValue -E -Q `"" + 'SET QUOTED_IDENTIFIER ON;' +"" +$cmdToRun + "`""
-	$LogName
-	Add-Content -Path $LogName -Value $cmdToRun
-	$GetReindexRetValue=Invoke-Expression $cmdToRun
-	
-	Add-Content -Path $LogName -Value $GetReindexRetValue
 
+        Try
+        {
+	            $reindexStmt  | write-PHLog  -echo -Logtype debug2
+	            "Start running index " + (Get-Date -format "yyyy-M-d HH:mm:ss")  | write-PHLog  -echo -Logtype debug2
+	            $LogBackupcmdToRun=$reindexStmt.LogbackupJob 
+                $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($reindexStmt.sqlcmdToRun.Replace("'","''"))','Started')"
+                Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+                $GetReindexRetValue=Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $($reindexStmt.sqlcmdToRun) -QueryTimeout $($reindexStmt.TimeoutValue)  -Username $SqlUser -Password $SqlPassword -Verbose 
+	            $GetReindexRetValue  | write-PHLog  -echo -Logtype debug2
+        }
+        catch
+        {
 
-#Create table to store output
-	if( !$GetReindexRetValue )  {
-		
-		$GetReindexRetValue = 'Success'
-	}
-	$Query = "use msdb;
-		  IF(OBJECT_ID('tbl_indexRebuild_Log','U') is null)
-			BEGIN
-				CREATE TABLE tbl_indexRebuild_Log (
-				logID INT IDENTITY(1,1) primary key clustered,
-				insertDate DATETIME default getdate(),
-				indexRebuildCommand NVARCHAR(2000),
-				returnValue NVARCHAR(max)
-				)
-			END
-			
-				INSERT INTO tbl_indexRebuild_Log(indexRebuildCommand,returnValue)
-				VALUES('$cmdToRun','$GetReindexRetValue')
-			"
-	$Get_DBInsertLog=Invoke-Sqlcmd -ServerInstance $ComputerNameParam -database "master" -Query $Query  -QueryTimeout 30 -Verbose  -ErrorAction Continue
+            "Error while fragmentating index "| write-PHLog  -echo -Logtype Error
+            $errMessage=$_.exception.message 
+            $errMessage | write-PHLog  -echo -Logtype Error
+            $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($reindexStmt.sqlcmdToRun.Replace("'","''"))','$errMessage')"
+            Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+        }
 
 
 
 # Check if its readonly database, if yes disable for read_write ....
-	if ($reindexStmt.flgUpdateability -eq 2)
-	   {
-		$ChangeDatabaseUpdateability= "Start Change Database Updateability  to Read_Only" + (Get-Date -format "yyyy-M-d HH:mm:ss")
-		Add-Content -Path $LogName -Value $ChangeDatabaseUpdateability
-		$ChangeDatabaseUpdateabilitycmdToRun = "if db_id('$Reindex_DatabaseName') is not null ALTER DATABASE [$Reindex_DatabaseName] SET  READ_ONLY WITH NO_WAIT"
-		$ChangeDatabaseUpdateabilitycmdToRun = "sqlcmd -S $ComputerNameParam -d master -E -Q `"" +'SET QUOTED_IDENTIFIER ON;' +"" + $ChangeDatabaseUpdateabilitycmdToRun + "`""
-		$ChangeDatabaseUpdateabilitycmdToRun
-		Add-Content -Path $LogName -Value $ChangeDatabaseUpdateabilitycmdToRun
-		$GetChangeDatabaseUpdateabilitycmdToRun=Invoke-Expression $ChangeDatabaseUpdateabilitycmdToRun
-		$GetChangeDatabaseUpdateabilitycmdToRun
-		Add-Content -Path $LogName -Value $GetChangeDatabaseUpdateabilitycmdToRun
-		Start-Sleep -s 2
-    	}
+	    if ($reindexStmt.flgUpdateability -eq 2)
+	       {
+            Try
+            {
+		        "Start Change Database Updateability  to Read_Only" + (Get-Date -format "yyyy-M-d HH:mm:ss") | write-PHLog  -echo -Logtype Debug2
+		        $ChangeDatabaseUpdateabilitycmdToRun = "if db_id('$Reindex_DatabaseName') is not null ALTER DATABASE [$Reindex_DatabaseName] SET  READ_ONLY WITH NO_WAIT"
+		        $ChangeDatabaseUpdateabilitycmdToRun | write-PHLog  -echo -Logtype Debug2
+                $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($ChangeDatabaseUpdateabilitycmdToRun.Replace("'","''"))','Started')"
+                Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+                $GetReindexRetValue=Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ChangeDatabaseUpdateabilitycmdToRun -QueryTimeout 60  -Username $SqlUser -Password $SqlPassword -Verbose 
+
+            }
+            catch
+            {
+                "Error while  running log backup job "| write-PHLog  -echo -Logtype Error
+                $errMessage=$_.exception.message 
+                $errMessage | write-PHLog  -echo -Logtype Error
+                $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($ChangeDatabaseUpdateabilitycmdToRun.Replace("'","''"))','$errMessage')"
+                Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+            }
+		    Start-Sleep -s 2
+    	    }
 # take backup if flag is enabled
-	if ($reindexStmt.flgBackupLog -eq 1)
-	   {
-		$Logbackupruntime= "Start running log backup " + (Get-Date -format "yyyy-M-d HH:mm:ss")
-		Add-Content -Path $LogName -Value $Logbackupruntime
-		#$LogBackupcmdToRun | Out-File $SQLcmdbatfile
-		$LogBackupcmdToRun = "sqlcmd -S $ComputerNameParam -d master -E -Q `"" +'SET QUOTED_IDENTIFIER ON;' +"" + $LogBackupcmdToRun + "`""
-		Add-Content -Path $LogName -Value $LogBackupcmdToRun
-		$GetLogBackupRetValue=Invoke-Expression $LogBackupcmdToRun
-		$GetLogBackupRetValue
-		Add-Content -Path $LogName -Value $GetLogBackupRetValue
-		Start-Sleep -s 20
-	   }
+	    if ($reindexStmt.flgBackupLog -eq 1)
+	       {
+                if(!([string]::IsNullOrEmpty($LogBackupcmdToRun)))
+                {
+
+                    Try
+                    {
+		                "Start running log backup job" + (Get-Date -format "yyyy-M-d HH:mm:ss") | write-PHLog  -echo -Logtype Debug2
+                        $LogBackupcmdToRun  | write-PHLog  -echo -Logtype Debug2
+                        $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($LogBackupcmdToRun.Replace("'","''"))','Started')"
+                        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+                        $GetReindexRetValue=Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $LogBackupcmdToRun -QueryTimeout 30  -Username $SqlUser -Password $SqlPassword -Verbose -ErrorAction Stop
+                        "Waiting for 30 sec"  | write-PHLog  -echo -Logtype Debug2
+                        $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('Waiting for 30 sec','Success')"
+                        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+            		    Start-Sleep -s 30
+
+                    }
+                    catch
+                    {
+                        "Error while  running log backup job "| write-PHLog  -echo -Logtype Error
+                        $errMessage=$_.exception.message 
+                        $errMessage | write-PHLog  -echo -Logtype Error
+                        $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($LogBackupcmdToRun.Replace("'","''"))','$errMessage')"
+                        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+                    }
+                }
+                else
+                {
+                        $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('Log backup job name could not be found, check backup job naming convention','Error')"
+                        Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+                }
+	       }
 
     }
 }
-	Add-Content -Path $LogName -Value "No Tables to be Re-Indexed."
-#.$LogName
+else
+{
+    "No tables met reindex criteria"| write-PHLog  -echo -Logtype Success
+    $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('No tables met reindex criteria','Success')"
+    Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+
+}
+
+"Reindex process completed"| write-PHLog  -echo -Logtype Success
+$SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('Reindexing Completed','Success')"
+Invoke-Sqlcmd -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30 -Username $SqlUser -Password $SqlPassword -Verbose 
+
