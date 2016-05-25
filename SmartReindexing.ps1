@@ -1,6 +1,6 @@
 ﻿param (
-    [string]$lServerName = "vSacCARSQL1.prod.dx",
-    [string]$SqlUser = "svcvalidatesql",
+    [string]$lServerName = "testserver.prod.local",
+    [string]$SqlUser = "svcvalidate",
     [string]$SqlPassword = "",
     [switch] $IgnoreReadOnlyDatabase
     )
