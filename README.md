@@ -24,15 +24,5 @@ Automatically update fill factor to 90 if not specified for tables with fragment
 
 Detailed execution status is logged into msdb..tbl_indexRebuild_Log 
 
+Check SmartReindexing - The quest of ultimate automation.docx for usage details
 
-
-
-Parameters:
-
-1. lServerName: SQL Server Name
-
-2. SqlUser: SQL user name (in case domain authentication not preferred)
-
-3. SqlPassword: If password is provided SQL authentication will be used to perform reindexing job
-
-4. IgnoreReadOnlyDatabase: default job will ignore read only db's for reindexing
