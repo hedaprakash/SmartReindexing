@@ -1,13 +1,14 @@
 ﻿param (
-    [string]$lServerName = "",
-    [string]$SqlUser = "",
-    [string]$SqlPassword = "",
+    [string]$lServerName = "W16s12E1",
+    [string]$SqlUser = "sa",
+    [string]$SqlPassword = "Sequoia2012",
     [switch]$DoNotIgnoreReadOnlyDatabase,
     [Int]$FragCollTimeout= 0,
     [Int]$BackupAfterChangePagesGB= 0,
     [string]$IgnoreTableForReindexing = "",
-    [string]$LogBackupJobName = ""
+    [string]$LogBackupJobName = "DBAbackupLogs"
     )
+
 
 $parameterpassed= "Parameters Passed:"
 $parameterpassed+= "`nlServerName: $lServerName"
@@ -18,6 +19,7 @@ $parameterpassed+= "`nBackupAfterChangePagesGB: $BackupAfterChangePagesGB"
 $parameterpassed+= "`nFragCollTimeout: $FragCollTimeout"
 $parameterpassed+= "`nLogBackupJobName: $LogBackupJobName"
 $parameterpassed+= "`nIgnoreTableForReindexing: $IgnoreTableForReindexing"
+$CommonBackupDBAJobs="'DBA:Backup All Tlogs','DBA_BackupDB.LogBackup','DBA_BackupDB.Logsbackup','DBA_Backup.LogBackup'"
 
 #+-------------------------------------------------------------------+    
 #| = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = |    
@@ -157,7 +159,10 @@ Param (
         $TestSqlAcces=$true
         $sqlresult=$ReturnResultset
         if ($sqlresult -match "Timeout expired")
-        {$SQLTimeoutExpired=$True}
+        {
+            $SQLTimeoutExpired=$True
+            $errorMsg=$sqlresult
+        }
 
     }
         Catch 
@@ -264,7 +269,7 @@ set-location "C:\" -PassThru | Out-Null
 set-location $ScriptLocation -PassThru | Out-Null 
 
 
-$Logtime=Get-Date -format "yyyyMdHHmmss"
+$Logtime=Get-Date -format "yyyyMMddHHmmss"
 $LogPath=$ScriptLocation + "\pslogs\"
 if(!(test-path $LogPath)){[IO.Directory]::CreateDirectory($LogPath)}
 $ExecutionSummaryLogFile=$LogPath + $lServerName.Replace("-","_").Replace("\","_")  + "_" + $ScriptNameWithoutExt +  "_ExecutionSummary_" + $Logtime + ".html"
@@ -288,6 +293,22 @@ $parameterpassed | write-PHLog -echo -Logtype Debug2
 
 $ErrorActionPreference = "STOP"
 
+# Checking database connection
+$queryGetSQLServerVersion= "select SERVERPROPERTY('ProductVersion') as ProductVersion,SERVERPROPERTY('Edition') as Edition"
+$RetqueryGetSQLServerVersion=fnExecuteQuery -ServerInstance $lServerName -Database "master" -Query $queryGetSQLServerVersion -QueryTimeout 60
+$RetqueryGetSQLServerVersionResult=$RetqueryGetSQLServerVersion.sqlresult
+$RetqueryGetSQLServerVersionResult | write-PHLog -echo -Logtype Debug2
+
+if (!([string]::IsNullOrEmpty($($RetqueryGetSQLServerVersion.ExecuteSQLError))))
+{
+    $RetqueryGetSQLServerVersion.ExecuteSQLError | write-PHLog -echo -Logtype Warning
+    "Error while getting sql server version on $lServerName , exiting" | write-PHLog -echo -Logtype Error
+    throw "Error while getting sql server version on $lServerName , exiting"
+}
+
+
+
+
 
 #region PrepareReinDexStats
 $reIndexruntime_Collect= "Start collecting index stats $($runtime)" 
@@ -307,7 +328,7 @@ BEGIN
 	CREATE TABLE msdb..tbl_indexRebuild_Log (
 	logID INT IDENTITY(1,1) primary key clustered,
 	insertDate DATETIME default getdate(),
-	indexRebuildCommand NVARCHAR(2000),
+	indexRebuildCommand VARCHAR(max),
 	returnValue NVARCHAR(max)
 	)
 END
@@ -352,15 +373,47 @@ into tempdb..CollectFragmentationDetails908
 FROM   SYS.DM_DB_INDEX_PHYSICAL_STATS (db_id('master'),NULL,NULL,NULL,NULL ) a
 where 1=2
 
-if (1=$DoNotIgnoreReadOnlyDatabaseflg)
-select name from sys.databases where name not in ( 'master','Model') 
+if object_id('sys.dm_hadr_availability_group_states') is not null
+begin
+exec('	if exists (select * from sys.dm_hadr_availability_group_states where primary_replica in (
+	select replica_server_name from sys.availability_replicas where replica_id in (
+	select replica_id from sys.databases where group_database_id is not null
+	)))
+	begin
+		if (1=$DoNotIgnoreReadOnlyDatabaseflg)
+		select name from sys.databases where name not in ( ''master'',''Model'') 
+		else
+		select name from sys.databases where name not in ( ''master'',''Model'') and is_read_only = 0 
+	end
+	else
+	begin
+		if (1=$DoNotIgnoreReadOnlyDatabaseflg)
+		select name from sys.databases where name not in ( ''master'',''Model'')  and group_database_id is null
+		else
+		select name from sys.databases where name not in ( ''master'',''Model'') and is_read_only = 0  and group_database_id is null
+	end
+	')
+end
+--added code to support SQL 2008 as group_database_id is missing
 else
-select name from sys.databases where name not in ( 'master','Model') and is_read_only = 0
+begin
+		if (1=$DoNotIgnoreReadOnlyDatabaseflg)
+		select name from sys.databases where name not in ( 'master','Model') 
+		else
+		select name from sys.databases where name not in ( 'master','Model') and is_read_only = 0 
+end
+
+
+
+
+
+
+
 
 
 "@
 
-#$PrepareIndexFragmentation|clip
+$PrepareIndexFragmentation|clip
 try
 {
     $ActivityName="`nPreparing index fragmentation collection table: msdb..tbl_indexRebuild_Log on server: $lServerName "
@@ -408,7 +461,15 @@ foreach ($dbname in $retPrepareIndexFragmentationResult)
 
     Try 
     {
-        $retDBIndexFragmentation=fnExecuteQuery -ServerInstance $lServerName -database "master" -Query $CollectDBIndexFragmentation -QueryTimeout $FragCollTimeout  -Verbose  
+        if ($dbname -match "temp")
+        {
+            $retDBIndexFragmentation=fnExecuteQuery -ServerInstance $lServerName -database "master" -Query $CollectDBIndexFragmentation -QueryTimeout 180  -Verbose  
+        }
+        else
+        {
+            $retDBIndexFragmentation=fnExecuteQuery -ServerInstance $lServerName -database "master" -Query $CollectDBIndexFragmentation -QueryTimeout $FragCollTimeout  -Verbose  
+        }
+
         $retDBIndexFragmentationResult= $retDBIndexFragmentation.sqlresult
         #$retDBIndexFragmentation
         if (($retDBIndexFragmentation.SQLTimeoutExpired -eq $true) -or ($retDBIndexFragmentation.ExecuteSQLError -ne $null))
@@ -658,8 +719,8 @@ order by a.database_id,TableName, INDEX_TYPE_DESC desc
 declare @backupLogJob varchar(200)
 if ('$LogBackupJobName' = '')
 begin
-    if exists (select name from msdb..sysjobs where name in ('DBA:Backup All Tlogs','DBA_BackupDB.LogBackup','DBA_BackupDB.Logsbackup') and enabled=1)
-    select @backupLogJob=name from msdb..sysjobs where name in ('DBA:Backup All Tlogs','DBA_BackupDB.LogBackup','DBA_BackupDB.Logsbackup') and enabled=1
+    if exists (select name from msdb..sysjobs where name in ($CommonBackupDBAJobs) and enabled=1)
+    select @backupLogJob=name from msdb..sysjobs where name in ($CommonBackupDBAJobs) and enabled=1
 end
 else
 begin
@@ -842,6 +903,7 @@ if ($CollectreindexSyntaxResult)
 # take backup if flag is enabled
 	    if ($reindexStmt.flgBackupLog -eq 1)
 	       {
+                $ActivityName="Start running log backup job $(GetLatestTime)"  
                 if(!([string]::IsNullOrEmpty($LogBackupcmdToRun)))
                 {
 
@@ -864,8 +926,8 @@ $GetBackupJobStatus= @"
 DECLARE @backupLogJob varchar(2000)
 if ('$LogBackupJobName' = '')
 begin
-    if exists (select name from msdb..sysjobs where name in ('DBA:Backup All Tlogs','DBA_BackupDB.LogBackup','DBA_BackupDB.Logsbackup') and enabled=1)
-    select @backupLogJob=name from msdb..sysjobs where name in ('DBA:Backup All Tlogs','DBA_BackupDB.LogBackup','DBA_BackupDB.Logsbackup') and enabled=1
+    if exists (select name from msdb..sysjobs where name in ($CommonBackupDBAJobs) and enabled=1)
+    select @backupLogJob=name from msdb..sysjobs where name in ($CommonBackupDBAJobs) and enabled=1
 end
 else
 begin
@@ -908,6 +970,7 @@ begin
 End
 "@
 $GetBackupJobStatus|clip
+                        $ActivityName = "Checking backup job status"
                         $backupFinished=$true
                         while ($backupFinished)
                         {
@@ -942,7 +1005,7 @@ $GetBackupJobStatus|clip
                                     else
                                     {
                                         "Backup log job not yet finished, waiting for 1 min to check again" | write-PHLog  -echo -Logtype Debug2
-                                        $RetBackupJobStatusResult | write-PHLog  -echo -Logtype debug2
+                                        $RetBackupJobStatusResult | write-PHLog  -Logtype debug2
                                         Start-Sleep -s 60
                                     }
                                 }
