@@ -1,19 +1,19 @@
 ﻿param (
-    [string]$lServerName = "W16s12E1",
+    [string]$lServerName = "",
     [string]$SqlUser = "sa",
-    [string]$SqlPassword = "Sequoia2012",
+    [string]$SqlPassword = "",
     [switch]$DoNotIgnoreReadOnlyDatabase,
     [Int]$FragCollTimeout= 0,
     [Int]$BackupAfterChangePagesGB= 0,
     [string]$IgnoreTableForReindexing = "",
-    [string]$LogBackupJobName = "DBAbackupLogs"
+    [string]$LogBackupJobName = ""
     )
 
 
 $parameterpassed= "Parameters Passed:"
 $parameterpassed+= "`nlServerName: $lServerName"
 $parameterpassed+= "`nSqlUser: $SqlUser"
-$parameterpassed+= if ($SqlPassword.Length -ne 0){"`nSqlPassword passed"} else {"`nSqlPassword not passed, windows authentication will be used"}
+$parameterpassed+= if ($SqlPassword.Length -ne 0){"`nSqlPassword: Passed"} else {"`nSqlPassword: Not passed, windows authentication will be used"}
 $parameterpassed+= if ($DoNotIgnoreReadOnlyDatabase.IsPresent){"`nDoNotIgnoreReadOnlyDatabaseflg switch was enabled"} else {"`nDoNotIgnoreReadOnlyDatabaseflg  switch was not enabled"}
 $parameterpassed+= "`nBackupAfterChangePagesGB: $BackupAfterChangePagesGB"
 $parameterpassed+= "`nFragCollTimeout: $FragCollTimeout"
@@ -42,6 +42,7 @@ $CommonBackupDBAJobs="'DBA:Backup All Tlogs','DBA_BackupDB.LogBackup','DBA_Backu
 #|: |08-22-2016 2.2     Prakash Heda  Bug Fixes                      |
 #|: |08-29-2016 3.0     Prakash Heda  added new features             |
 #|: |08-29-2016 3.1     Prakash Heda  Misc bug fixes             |
+#|: |03-31-2017 3.3     Prakash Heda  Misc bug fixes             |
 #|{>\-------------------------------------------------------------/<}|  
 #| = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = |  
 #+-------------------------------------------------------------------+  
@@ -117,6 +118,7 @@ else
 	}
 } 
 
+#Get time differnce for executions
 Function getTimeDiff{
     Param ($StartTime, $endTime)
     $TimeDiff = New-TimeSpan $startTime $endTime
@@ -135,6 +137,7 @@ Function getTimeDiff{
     return $TotalExecutionTime 
 }
 
+#Execute Query on SQL server
 function fnExecuteQuery {
 Param (
   [string] $ServerInstance = $(throw "DB Server Name must be specified."),
@@ -198,6 +201,7 @@ Param (
         return $functionOutput
 }
 
+#Common function to write logs in HTMl format with color coding
 function write-PHLog {
     param([string] $Logtype,
           [string] $fileName,
@@ -215,8 +219,8 @@ function write-PHLog {
         }
 
 
-$CurrentPath=$pwd
-set-location c:\ -PassThru | out-null
+        $CurrentPath=$pwd
+        set-location c:\ -PassThru | out-null
 
     Try {            
             $LogToWriteRec=@()
@@ -269,6 +273,7 @@ set-location "C:\" -PassThru | Out-Null
 set-location $ScriptLocation -PassThru | Out-Null 
 
 
+# Set startup variables
 $Logtime=Get-Date -format "yyyyMMddHHmmss"
 $LogPath=$ScriptLocation + "\pslogs\"
 if(!(test-path $LogPath)){[IO.Directory]::CreateDirectory($LogPath)}
@@ -299,30 +304,34 @@ $RetqueryGetSQLServerVersion=fnExecuteQuery -ServerInstance $lServerName -Databa
 $RetqueryGetSQLServerVersionResult=$RetqueryGetSQLServerVersion.sqlresult
 $RetqueryGetSQLServerVersionResult | write-PHLog -echo -Logtype Debug2
 
-if (!([string]::IsNullOrEmpty($($RetqueryGetSQLServerVersion.ExecuteSQLError))))
+if ($RetqueryGetSQLServerVersion.TestSqlAcces -eq $false) 
 {
-    $RetqueryGetSQLServerVersion.ExecuteSQLError | write-PHLog -echo -Logtype Warning
-    "Error while getting sql server version on $lServerName , exiting" | write-PHLog -echo -Logtype Error
-    throw "Error while getting sql server version on $lServerName , exiting"
+    $FailedConnection= [pscustomobject] @{
+        Hostname=$lServerName
+        ServerInstance=$lServerName
+        FailedConnection="SQL Access failed for Connection, please try connecting to  $lServerName manually"
+        ErrorMessage=$RetqueryGetSQLServerVersion.ExecuteSQLError
+        }
+    $FailedConnection | write-PHLog -echo -Logtype Warning
+    $FailedConnection.ErrorMessage | write-PHLog -echo -Logtype Warning
+    "Verify connecting to ServerInstance $($FailedConnection.ServerInstance) manually via SSMS"| write-PHLog -echo -Logtype Error
+    "Verify telnet command to check sql port: telnet $($FailedConnection.Hostname) 1433"| write-PHLog -echo -Logtype Error
+    exit
 }
 
 
 
 
-
-#region PrepareReinDexStats
+#region PrepareReindexStats
 $reIndexruntime_Collect= "Start collecting index stats $($runtime)" 
 $reIndexruntime_Collect | write-PHLog -Logtype Debug2
 
 if ($DoNotIgnoreReadOnlyDatabase.IsPresent){$DoNotIgnoreReadOnlyDatabaseflg=1} else {$DoNotIgnoreReadOnlyDatabaseflg=0}
 
-#$DoNotIgnoreReadOnlyDatabaseflg=1
 $ScriptDurationStats+=[pscustomobject] @{Activity="CommonCode";StartTime=$StartTime;TimeTaken=$(getTimeDiff $StartTime $(GET-DATE))}
 [datetime]$StartTime=(GET-DATE)
 
 $PrepareIndexFragmentation= @"
-
-
 IF (OBJECT_ID('msdb..tbl_indexRebuild_Log','U') is null)
 BEGIN
 	CREATE TABLE msdb..tbl_indexRebuild_Log (
@@ -413,7 +422,6 @@ end
 
 "@
 
-$PrepareIndexFragmentation|clip
 try
 {
     $ActivityName="`nPreparing index fragmentation collection table: msdb..tbl_indexRebuild_Log on server: $lServerName "
@@ -506,8 +514,8 @@ $ScriptDurationStats+=[pscustomobject] @{Activity="GetFragDetails";StartTime=$St
 [datetime]$StartTime=(GET-DATE)
 
 #region GenerateDBReindexCode
-# Code to generate reindex syntax
 
+# Code to generate reindex syntax
 $GenerateDBReindexCode= @"
 set nocount on
 GO
@@ -918,7 +926,7 @@ if ($CollectreindexSyntaxResult)
                         if (($GetLogBackupRunValue.SQLTimeoutExpired -eq $true) -or ($GetLogBackupRunValue.ExecuteSQLError -ne $null))
                         {
                             $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($LogBackupcmdToRun.Replace("'","''"))','$($GetLogBackupRunValue.ExecuteSQLError)')"
-                            $AppErrorCollection+=[pscustomobject] @{ErrorType="SQL";ErrorActivityName=$ActivityName;ErrorMessage=$($GetLogBackupRunValue.ExecuteSQLError) }
+                            $AppWarningCollection+=[pscustomobject] @{ErrorType="SQL";ErrorActivityName=$ActivityName;ErrorMessage=$($GetLogBackupRunValue.ExecuteSQLError) }
                             $ignoreReturnValue=fnExecuteQuery -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30  -Verbose 
                             "Error while running log backup job: $($GetLogBackupRunValue.ExecuteSQLError) "| write-PHLog  -echo -Logtype Error
                         }
@@ -969,7 +977,6 @@ begin
 	select * from @xp_results
 End
 "@
-$GetBackupJobStatus|clip
                         $ActivityName = "Checking backup job status"
                         $backupFinished=$true
                         while ($backupFinished)
