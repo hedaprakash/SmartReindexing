@@ -41,8 +41,10 @@ $CommonBackupDBAJobs="'DBA:Backup All Tlogs','DBA_BackupDB.LogBackup','DBA_Backu
 #|: |05-24-2016 2.1     Prakash Heda  Bug Fixes and added logging    |
 #|: |08-22-2016 2.2     Prakash Heda  Bug Fixes                      |
 #|: |08-29-2016 3.0     Prakash Heda  added new features             |
-#|: |08-29-2016 3.1     Prakash Heda  Misc bug fixes             |
-#|: |03-31-2017 3.3     Prakash Heda  Misc bug fixes             |
+#|: |08-29-2016 3.1     Prakash Heda  Misc bug fixes                 |
+#|: |03-31-2017 3.3     Prakash Heda  Misc bug fixes                 |
+#|: |04-02-2017 3.4     Prakash Heda  Fixed if log backup job was    |
+#|: |                                 already running by another job |
 #|{>\-------------------------------------------------------------/<}|  
 #| = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = : = |  
 #+-------------------------------------------------------------------+  
@@ -899,7 +901,7 @@ if ($CollectreindexSyntaxResult)
             }
             catch
             {
-                "Error while  running log backup job "| write-PHLog  -echo -Logtype Error
+                "Error while  $ActivityName"| write-PHLog  -echo -Logtype Error
                 $errMessage=$_.exception.message 
                 $errMessage | write-PHLog  -echo -Logtype Error
                 $AppErrorCollection+=[pscustomobject] @{ErrorType="PS";ErrorActivityName=$ActivityName;ErrorMessage=$($errMessage) }
@@ -917,19 +919,8 @@ if ($CollectreindexSyntaxResult)
 
                     Try
                     {
-		                $ActivityName="Start running log backup job $(GetLatestTime)"  
-                        $ActivityName | write-PHLog  -echo -Logtype Debug2
-                        $LogBackupcmdToRun  | write-PHLog  -echo -Logtype Debug2
-                        $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($LogBackupcmdToRun.Replace("'","''"))','Started')"
-                        $ignoreReturnValue=fnExecuteQuery -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30  -Verbose 
-                        $GetLogBackupRunValue=fnExecuteQuery -ServerInstance $lServerName -database "master" -Query $LogBackupcmdToRun -QueryTimeout 30   -Verbose -ErrorAction Stop
-                        if (($GetLogBackupRunValue.SQLTimeoutExpired -eq $true) -or ($GetLogBackupRunValue.ExecuteSQLError -ne $null))
-                        {
-                            $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($LogBackupcmdToRun.Replace("'","''"))','$($GetLogBackupRunValue.ExecuteSQLError)')"
-                            $AppWarningCollection+=[pscustomobject] @{ErrorType="SQL";ErrorActivityName=$ActivityName;ErrorMessage=$($GetLogBackupRunValue.ExecuteSQLError) }
-                            $ignoreReturnValue=fnExecuteQuery -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30  -Verbose 
-                            "Error while running log backup job: $($GetLogBackupRunValue.ExecuteSQLError) "| write-PHLog  -echo -Logtype Error
-                        }
+
+# Checking if backup log job was not already running or requested to run by another process
 $GetBackupJobStatus= @"
 DECLARE @backupLogJob varchar(2000)
 if ('$LogBackupJobName' = '')
@@ -977,6 +968,31 @@ begin
 	select * from @xp_results
 End
 "@
+                        $RetBackupJobStatus=fnExecuteQuery -ServerInstance $lServerName -database "master" -Query $GetBackupJobStatus -QueryTimeout 30   -Verbose -ErrorAction Stop
+                        $RetBackupJobStatusResult= $RetBackupJobStatus.sqlresult
+                        if (!(($RetBackupJobStatusResult.running -eq $true) -or ($RetBackupJobStatusResult.requested_to_run -eq $true) ))
+                        {
+		                    $ActivityName="Start running log backup job $(GetLatestTime)"  
+                            $ActivityName | write-PHLog  -echo -Logtype Debug2
+                            $LogBackupcmdToRun  | write-PHLog  -echo -Logtype Debug2
+                            $SuccessMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($LogBackupcmdToRun.Replace("'","''"))','Started')"
+                            $ignoreReturnValue=fnExecuteQuery -ServerInstance $lServerName -database "master" -Query $SuccessMsgToLog -QueryTimeout 30  -Verbose 
+                            $GetLogBackupRunValue=fnExecuteQuery -ServerInstance $lServerName -database "master" -Query $LogBackupcmdToRun -QueryTimeout 30   -Verbose -ErrorAction Stop
+                            if (($GetLogBackupRunValue.SQLTimeoutExpired -eq $true) -or ($GetLogBackupRunValue.ExecuteSQLError -ne $null))
+                            {
+                                $ErrMsgToLog= "INSERT INTO msdb..tbl_indexRebuild_Log(indexRebuildCommand,returnValue) VALUES('$($LogBackupcmdToRun.Replace("'","''"))','$($GetLogBackupRunValue.ExecuteSQLError)')"
+                                $AppWarningCollection+=[pscustomobject] @{ErrorType="SQL";ErrorActivityName=$ActivityName;ErrorMessage=$($GetLogBackupRunValue.ExecuteSQLError) }
+                                $ignoreReturnValue=fnExecuteQuery -ServerInstance $lServerName -database "master" -Query $ErrMsgToLog -QueryTimeout 30  -Verbose 
+                                "Error while running log backup job: $($GetLogBackupRunValue.ExecuteSQLError) "| write-PHLog  -echo -Logtype Error
+                            }
+
+                        }
+                        else
+                        {
+                            "Backup log job was already running, not strated by reindexing processs, will check status again in 10 sec" | write-PHLog  -echo -Logtype Debug2
+                            Start-Sleep -s 10
+                        }
+
                         $ActivityName = "Checking backup job status"
                         $backupFinished=$true
                         while ($backupFinished)
@@ -1019,6 +1035,25 @@ End
                             }
                         }
                     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                     catch
                     {
                         "Error while  running log backup job "| write-PHLog  -echo -Logtype Error

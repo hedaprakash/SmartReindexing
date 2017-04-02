@@ -14,13 +14,10 @@ $SqlPassword="Sequoia2012"
 $erroractionpreference = "Stop"
 \\w12r2hv\SQLSetup\Scripts\SmartReindexing\SmartReindexing.ps1  
 
-start-sleep -s 10
 
 #To run on localhost and include read only db
 $erroractionpreference = "Stop"
 \\w12r2hv\SQLSetup\Scripts\SmartReindexing\SmartReindexing.ps1  -DoNotIgnoreReadOnlyDatabase
-
-start-sleep -s 10
 
 #To execute using sql authentication
 $erroractionpreference = "Stop"
@@ -28,24 +25,19 @@ $SqlUser="sa"
 $SqlPassword="Sequoia2012" 
 \\w12r2hv\SQLSetup\Scripts\SmartReindexing\SmartReindexing.ps1  -SqlUser $SqlUser -SqlPassword $SqlPassword 
 
-start-sleep -s 10
 
 #To ignore certain tables from reindexing
 $erroractionpreference = "Stop"
 \\w12r2hv\SQLSetup\Scripts\SmartReindexing\SmartReindexing.ps1  -IgnoreTableForReindexing "PerformanceSecurity,AdvPortfolioTransaction"
 
-start-sleep -s 10
-
 #To execute "DBA_BackupDB.LogBackup" backup job
 $erroractionpreference = "Stop"
 \\w12r2hv\SQLSetup\Scripts\SmartReindexing\SmartReindexing.ps1  -LogBackupJobName "DBA:Backup All Tlogs"
 
-start-sleep -s 10
 #To execute with backup taken after 10 GB 
 $erroractionpreference = "Stop"
 \\w12r2hv\SQLSetup\Scripts\SmartReindexing\SmartReindexing.ps1  -BackupAfterChangePagesGB 10
 
-start-sleep -s 10
 #To execute with waiting upto 30 minute before ignore collecting fragmentation data (in seconds)
 $erroractionpreference = "Stop"
 \\w12r2hv\SQLSetup\Scripts\SmartReindexing\SmartReindexing.ps1  -FragCollTimeout 1800
